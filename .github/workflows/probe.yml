@@ -1,0 +1,24 @@
+# One-off test: can we read irsc.ut.ac.ir through the Iranian proxy? (owner-only, posts nothing)
+name: IRSC probe
+on: workflow_dispatch
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fetch IRSC through the proxy
+        env:
+          IR_PROXY: ${{ secrets.IR_PROXY }}   # host:port:user:pass (Reza pasted it)
+        run: |
+          IFS=: read -r H P U W <<< "$IR_PROXY"
+          [ -n "$H" ] || { echo "::error::IR_PROXY secret missing"; exit 1; }
+          mkdir -p out
+          for path in / /index.php?lang=fa /index.php?lang=en; do
+            f="out/page$(echo "$path" | tr -c 'a-z0-9' '_').html"
+            code=$(curl -sS -L --max-time 40 -x "http://$H:$P" -U "$U:$W" -A "Mozilla/5.0" \
+              -o "$f" -w '%{http_code} %{size_download} %{time_total} %{url_effective}' "https://irsc.ut.ac.ir$path" 2>&1) || true
+            echo "$path -> $code"
+          done
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with: { name: irsc-pages, path: out, retention-days: 3 }
