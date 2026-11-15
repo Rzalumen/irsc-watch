@@ -1,37 +1,44 @@
-# One-off test: read irsc.ut.ac.ir (plain http) through the Iranian proxy and save the page to branch probe-out (posts nothing)
+# Diagnosis: who answers for irsc.ut.ac.ir, from where? (manual run only, posts nothing)
 name: IRSC probe
 on: workflow_dispatch
-permissions: { contents: write }
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 12
     steps:
-      - name: Fetch IRSC pages through the proxy
+      - name: Diagnose
         env:
-          IR_PROXY: ${{ secrets.IR_PROXY }}   # host:port:user:pass (Reza pasted it)
+          IR_PROXY: ${{ secrets.IR_PROXY }}
         run: |
           set +e
           IFS=: read -r H P U W <<< "$IR_PROXY"
           [ -n "$H" ] || { echo "::error::IR_PROXY secret missing"; exit 1; }
-          mkdir -p out
-          t() { n=$1; shift
-            r=$(curl -sS --max-time 40 -x "http://$H:$P" -U "$U:$W" -A "Mozilla/5.0" -o "out/$n.html" \
-                -w '%{http_code} %{size_download}B %{time_total}s %{redirect_url}' "$@" 2>&1)
-            echo "$n -> $r"; }
-          L0="--ciphers DEFAULT:@SECLEVEL=0"
-          t tls10    --tlsv1.0 --tls-max 1.0 $L0 https://irsc.ut.ac.ir/
-          t tls11    --tlsv1.1 --tls-max 1.1 $L0 https://irsc.ut.ac.ir/
-          t tls12old --tlsv1.2 --tls-max 1.2 $L0 https://irsc.ut.ac.ir/
-          t tls13    --tlsv1.3 https://irsc.ut.ac.ir/
-          t insecure -k $L0 https://irsc.ut.ac.ir/
-          for i in 1 2 3; do t http$i http://irsc.ut.ac.ir/; done
-          t ut      https://ut.ac.ir/
-          t ig      https://www.irna.ir/
-          ls -la out; for f in out/*.html; do [ -s "$f" ] && { echo "== $f"; head -c 400 "$f" | tr '\n' ' '; echo; }; done
-
-      - name: Save to branch probe-out
-        run: |
-          cd out && git init -q -b probe-out && git config user.name probe && git config user.email probe@users.noreply.github.com
-          git add -A && git commit -qm "IRSC pages $(date -u +%FT%TZ)"
-          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" HEAD:probe-out
+          BASE="${U%-sid-*}"
+          W1='%{http_code} %{size_download}B %{time_total}s ip=%{remote_ip}'
+          echo "=== A. direct from runner (no proxy)"
+          echo "dns: $(getent hosts irsc.ut.ac.ir | tr '\n' ' ')"
+          for u in http://irsc.ut.ac.ir/ https://irsc.ut.ac.ir/; do
+            echo "direct $u -> $(curl -sS -m 15 -A Mozilla/5.0 -D /tmp/h -o /tmp/b -w "$W1" "$u" 2>&1)"; grep -iE '^(server|location|via|x-|content-type)' /tmp/h 2>/dev/null | tr -d '\r' | sed 's/^/   /'; : > /tmp/h
+          done
+          echo "=== B. through proxy, 4 sessions"
+          for i in 1 2 3 4; do
+            S="$BASE-sid-$(printf '%08x' $((RANDOM*RANDOM+i)))"
+            px() { curl -sS -x "http://$H:$P" -U "$S:$W" -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" "$@"; }
+            echo "--- session $i"
+            echo "exit: $(px -m 30 https://ipinfo.io/json 2>&1 | tr -d '\n ' | grep -oE '"(ip|country|org|city)":"[^"]*"' | tr '\n' ' ')"
+            : > /tmp/h; : > /tmp/b
+            echo "http  -> $(px -m 40 -D /tmp/h -o /tmp/b -w '%{http_code} %{size_download}B %{time_total}s' http://irsc.ut.ac.ir/ 2>&1)"
+            tr -d '\r' < /tmp/h | grep -viE 'authoriz|cookie' | head -12 | sed 's/^/   /'
+            head -c 300 /tmp/b | tr '\n' ' ' | sed 's/^/   body: /'; echo
+            echo "https -> $(px -m 40 -o /tmp/b2 -w '%{http_code} %{size_download}B %{time_total}s' https://irsc.ut.ac.ir/ 2>&1)"
+            px -m 40 -v -o /dev/null https://irsc.ut.ac.ir/ 2>&1 | grep -viE 'authoriz|^\{|^\}' | grep -E '^[*<>]' | head -25 | sed 's/^/   /'
+            echo "https via IP -> $(px -m 40 -o /dev/null --connect-to irsc.ut.ac.ir:443:80.66.177.64:443 -w '%{http_code} %{size_download}B %{time_total}s' https://irsc.ut.ac.ir/ 2>&1)"
+            echo "www   -> $(px -m 40 -o /dev/null -w '%{http_code} %{size_download}B %{time_total}s %{redirect_url}' https://www.irsc.ut.ac.ir/ 2>&1)"
+          done
+          echo "=== C. socks5 on same port"
+          S="$BASE-sid-$(printf '%08x' $((RANDOM*RANDOM)))"
+          echo "socks https -> $(curl -sS -m 40 --socks5-hostname "$H:$P" --proxy-user "$S:$W" -o /dev/null -w '%{http_code} %{size_download}B %{time_total}s' https://irsc.ut.ac.ir/ 2>&1)"
+          echo "=== D. other sources, direct (no proxy)"
+          for u in https://www.iiees.ac.ir/ http://www.iiees.ac.ir/fa/eqcatalog/ https://eitaa.com/irsc_ut https://t.me/s/irsc_ut https://ble.ir/irsc_ut https://geophysics.ut.ac.ir/ http://irsc.ut.ac.ir/events_list.xml http://irsc.ut.ac.ir/currentearthq.php; do
+            echo "$u -> $(curl -sS -m 20 -A Mozilla/5.0 -o /tmp/d -w '%{http_code} %{size_download}B %{time_total}s %{redirect_url}' "$u" 2>&1)"
+          done
