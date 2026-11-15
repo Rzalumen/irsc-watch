@@ -19,10 +19,17 @@ jobs:
             r=$(curl -sS --max-time 40 -x "http://$H:$P" -U "$U:$W" -A "Mozilla/5.0" -o "out/$n.html" \
                 -w '%{http_code} %{size_download}B %{time_total}s %{redirect_url}' "$@" 2>&1)
             echo "$n -> $r"; }
-          t home   http://irsc.ut.ac.ir/
-          t fa     "http://irsc.ut.ac.ir/index.php?lang=fa"
-          t en     "http://irsc.ut.ac.ir/index.php?lang=en"
-          grep -oiE '(href|src)="[^"]*"' out/*.html | sort -u | head -80
+          L0="--ciphers DEFAULT:@SECLEVEL=0"
+          t tls10    --tlsv1.0 --tls-max 1.0 $L0 https://irsc.ut.ac.ir/
+          t tls11    --tlsv1.1 --tls-max 1.1 $L0 https://irsc.ut.ac.ir/
+          t tls12old --tlsv1.2 --tls-max 1.2 $L0 https://irsc.ut.ac.ir/
+          t tls13    --tlsv1.3 https://irsc.ut.ac.ir/
+          t insecure -k $L0 https://irsc.ut.ac.ir/
+          for i in 1 2 3; do t http$i http://irsc.ut.ac.ir/; done
+          t ut      https://ut.ac.ir/
+          t ig      https://www.irna.ir/
+          ls -la out; for f in out/*.html; do [ -s "$f" ] && { echo "== $f"; head -c 400 "$f" | tr '\n' ' '; echo; }; done
+
       - name: Save to branch probe-out
         run: |
           cd out && git init -q -b probe-out && git config user.name probe && git config user.email probe@users.noreply.github.com
