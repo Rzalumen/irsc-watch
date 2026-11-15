@@ -1,12 +1,13 @@
-# One-off test: can we read irsc.ut.ac.ir through the Iranian proxy? (owner-only, posts nothing)
+# One-off test: read irsc.ut.ac.ir (plain http) through the Iranian proxy and save the page to branch probe-out (posts nothing)
 name: IRSC probe
 on: workflow_dispatch
+permissions: { contents: write }
 jobs:
   probe:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
-      - name: Diagnose the proxy path
+      - name: Fetch IRSC pages through the proxy
         env:
           IR_PROXY: ${{ secrets.IR_PROXY }}   # host:port:user:pass (Reza pasted it)
         run: |
@@ -14,26 +15,16 @@ jobs:
           IFS=: read -r H P U W <<< "$IR_PROXY"
           [ -n "$H" ] || { echo "::error::IR_PROXY secret missing"; exit 1; }
           mkdir -p out
-          t() {  # name, extra curl args..., url
-            n=$1; shift
-            r=$(curl -sS --max-time 30 -x "http://$H:$P" -U "$U:$W" -A "Mozilla/5.0" -o "out/$n.txt" \
-                -w '%{http_code} %{size_download}B %{time_total}s' "$@" 2>&1) || true
-            echo "$n -> $r"
-          }
-          t exit_ip        http://ip-api.com/json/?fields=country,isp,query
-          head -c 300 out/exit_ip.txt 2>/dev/null; echo
-          t example_https  https://example.com/
-          t google_https   https://www.google.com/
-          t ut_https       https://ut.ac.ir/
-          t irsc_http      http://irsc.ut.ac.ir/
-          t irsc_https     https://irsc.ut.ac.ir/
-          t irsc_tls12     --tlsv1.2 --tls-max 1.2 https://irsc.ut.ac.ir/
-          t irsc_ip_http   -H "Host: irsc.ut.ac.ir" http://$(getent hosts irsc.ut.ac.ir | awk '{print $1}')/
-          echo "irsc DNS from runner: $(getent hosts irsc.ut.ac.ir)"
-          for i in 1 2 3; do  # new Iranian IP each try (new session id)
-            r=$(curl -sS --max-time 30 -x "http://$H:$P" -U "${U%-sid-*}-sid-t$RANDOM$i:$W" -A "Mozilla/5.0" -o /dev/null \
-                -w '%{http_code} %{size_download}B %{time_total}s' https://irsc.ut.ac.ir/ 2>&1) || true
-            echo "irsc_https new IP $i -> $r"
-          done
-      - uses: actions/upload-artifact@v4
-        with: { name: irsc-diag, path: out, retention-days: 3 }
+          t() { n=$1; shift
+            r=$(curl -sS --max-time 40 -x "http://$H:$P" -U "$U:$W" -A "Mozilla/5.0" -o "out/$n.html" \
+                -w '%{http_code} %{size_download}B %{time_total}s %{redirect_url}' "$@" 2>&1)
+            echo "$n -> $r"; }
+          t home   http://irsc.ut.ac.ir/
+          t fa     "http://irsc.ut.ac.ir/index.php?lang=fa"
+          t en     "http://irsc.ut.ac.ir/index.php?lang=en"
+          grep -oiE '(href|src)="[^"]*"' out/*.html | sort -u | head -80
+      - name: Save to branch probe-out
+        run: |
+          cd out && git init -q -b probe-out && git config user.name probe && git config user.email probe@users.noreply.github.com
+          git add -A && git commit -qm "IRSC pages $(date -u +%FT%TZ)"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" HEAD:probe-out
