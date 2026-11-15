@@ -1,27 +1,36 @@
-# Dump the IRSC quake list format (manual run only, posts nothing)
+# Which proxy gateways pass plain http? Is events_list.xml cheap to poll? (manual run only, posts nothing)
 name: IRSC probe
 on: workflow_dispatch
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 10
     steps:
-      - name: Fetch
+      - name: Test
         env:
           IR_PROXY: ${{ secrets.IR_PROXY }}
         run: |
           set +e
           IFS=: read -r H P U W <<< "$IR_PROXY"
           BASE="${U%-sid-*}"
-          get() {  # url -> /tmp/b ; retries with a new session until HTTP 200
-            for i in 1 2 3 4 5 6 7 8; do
-              S="$BASE-sid-$(printf '%08x' $((RANDOM*RANDOM+i)))"
-              c=$(curl -s --compressed -m 40 -x "http://$H:$P" -U "$S:$W" -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" -o /tmp/b -w '%{http_code} %{size_download}B %{time_total}s' "$1" 2>/dev/null)
-              echo "try $i: $c"; [ "${c%% *}" = 200 ] && return 0
-            done; return 1; }
-          for u in "http://irsc.ut.ac.ir/" "http://irsc.ut.ac.ir/index.php?lang=fa" "http://irsc.ut.ac.ir/events_list.xml" "http://irsc.ut.ac.ir/currentearthq.php"; do
-            echo "=== $u"; get "$u" || continue
-            echo "--- links"; grep -oiE '(href|src|action)=["'"'"'][^"'"'"']*' /tmp/b | sort -u | head -40
-            echo "--- raw rows"; grep -n -iE '<tr|<td' /tmp/b | head -40 | cut -c1-400
-            echo "--- text"; sed -e 's/<[^>]*>/ /g' /tmp/b | tr -s ' \t\r' ' ' | grep -v '^ *$' | head -70 | cut -c1-300
+          sid() { echo "$BASE-sid-$(printf '%08x' $((RANDOM*RANDOM+1)))"; }
+          echo "=== gateways (2 rounds)"
+          for round in 1 2; do for ip in $(getent ahostsv4 "$H" | awk '{print $1}' | sort -u); do
+            c=$(curl -s -m 30 --resolve "$H:$P:$ip" -x "http://$H:$P" -U "$(sid):$W" -A Mozilla/5.0 -o /dev/null -w '%{http_code} %{size_download}B %{time_total}s' http://irsc.ut.ac.ir/events_list.xml 2>/dev/null)
+            echo "$ip -> $c"
+          done; done
+          echo "=== events_list.xml"
+          for i in 1 2 3 4 5 6 7 8; do
+            c=$(curl -s -m 40 -x "http://$H:$P" -U "$(sid):$W" -A Mozilla/5.0 -H 'Accept-Encoding: gzip' -D /tmp/h -o /tmp/x -w '%{http_code} %{size_download}B %{time_total}s' http://irsc.ut.ac.ir/events_list.xml 2>/dev/null)
+            echo "try $i: $c"; [ "${c%% *}" = 200 ] && break
+          done
+          tr -d '\r' < /tmp/h | grep -viE 'authoriz|cookie'
+          file /tmp/x; (zcat /tmp/x 2>/dev/null || cat /tmp/x) > /tmp/x2; wc -c /tmp/x2
+          head -c 2500 /tmp/x2; echo; echo ...; tail -c 600 /tmp/x2; echo
+          echo "items: $(grep -c '<item' /tmp/x2)"
+          LM=$(tr -d '\r' < /tmp/h | grep -i '^last-modified:' | cut -d' ' -f2-); ET=$(tr -d '\r' < /tmp/h | grep -i '^etag:' | cut -d' ' -f2-)
+          echo "=== conditional GET (LM='$LM' ET='$ET')"
+          for i in 1 2 3 4 5 6; do
+            c=$(curl -s -m 40 -x "http://$H:$P" -U "$(sid):$W" -A Mozilla/5.0 ${LM:+-H "If-Modified-Since: $LM"} ${ET:+-H "If-None-Match: $ET"} -o /dev/null -w '%{http_code} %{size_download}B' http://irsc.ut.ac.ir/events_list.xml 2>/dev/null)
+            echo "try $i: $c"; case "${c%% *}" in 200|304) break;; esac
           done
